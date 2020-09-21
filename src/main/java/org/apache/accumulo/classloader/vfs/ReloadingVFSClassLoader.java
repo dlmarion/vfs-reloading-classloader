@@ -177,7 +177,7 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
   /**
    * Replace environment variables in the string with their actual value
    */
-  static String replaceEnvVars(String classpath, Map<String,String> env) {
+  public static String replaceEnvVars(String classpath, Map<String,String> env) {
     Pattern envPat = Pattern.compile("\\$[A-Za-z][a-zA-Z0-9_]*");
     Matcher envMatcher = envPat.matcher(classpath);
     while (envMatcher.find(0)) {
