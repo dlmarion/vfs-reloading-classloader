@@ -23,13 +23,13 @@ This module contains a [ClassLoader](https://docs.oracle.com/en/java/javase/11/d
 
 To use this ClassLoader as the System ClassLoader you must set the JVM system property **java.system.class.loader** to the fully qualified class name (org.apache.accumulo.vfs.ReloadingVFSClassLoader). This jar and it's dependent jars must be on the **java.class.path**. 
 
-To set the classpath for this ClassLoader you must define the variable **vfs.class.loader.classpath** in the environment and set it to locations that are supported by [Apache Commons VFS](http://commons.apache.org/proper/commons-vfs/filesystems.html).
+To set the classpath for this ClassLoader you must define the system property **vfs.class.loader.classpath** and set it to locations that are supported by [Apache Commons VFS](http://commons.apache.org/proper/commons-vfs/filesystems.html).
 
-The ClassLoader monitors the classpath for changes at 5 minute intervals. To change this interval define the variable **vfs.classpath.monitor.seconds** in the enviroment.
+The ClassLoader monitors the classpath for changes at 5 minute intervals. To change this interval define the sytem property **vfs.classpath.monitor.seconds**.
 
-This ClassLoader follows the normal parent delegation model but can be set to load classes and resources first, before checking if the parent classloader can, by setting the environment variable **vfs.class.loader.delegation** to "post".
+This ClassLoader follows the normal parent delegation model but can be set to load classes and resources first, before checking if the parent classloader can, by setting the system property **vfs.class.loader.delegation** to "post".
 
-Finally, this ClassLoader keeps a local cache of objects pulled from remote systems (via http, etc.). The default location for this cache directory is the value of the system property **java.io.tmpdir**. To change this location set the environment variable **vfs.cache.dir** to an existing directory.
+Finally, this ClassLoader keeps a local cache of objects pulled from remote systems (via http, etc.). The default location for this cache directory is the value of the system property **java.io.tmpdir**. To change this location set the system property **vfs.cache.dir** to an existing directory.
 
 ## Implementation
 
