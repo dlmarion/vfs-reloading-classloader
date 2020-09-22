@@ -58,10 +58,10 @@ import org.slf4j.LoggerFactory;
  * the classpath. When a change is noticed, this classloader will then load the new classes in
  * subsequent calls to loadClass. This classloader supports both the normal classloader
  * pre-delegation model and a post-delegation model. To enable the post-delegation feature set the
- * environment variable <b>vfs.class.loader.delegation</b> to "post".
+ * system property <b>vfs.class.loader.delegation</b> to "post".
  *
  * <p>
- * This classloader uses the following environment variables:
+ * This classloader uses the following system properties:
  *
  * <ol>
  * <li><b>vfs.cache.dir</b> - for specifying the directory to use for the local VFS cache (default
@@ -74,7 +74,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>
  * This class will attempt to perform substitution on any environment variables found in the values.
- * For example, the environment variable <b>vfs.cache.dir</b> can be set to <b>$HOME/cache</b>.
+ * For example, the system property <b>vfs.cache.dir</b> can be set to <b>$HOME/cache</b>.
  */
 public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, FileListener {
 
@@ -134,7 +134,7 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    * @return classpath value
    */
   protected String getClassPath() {
-    String cp = System.getenv(VFS_CLASSLOADER_CLASSPATH);
+    String cp = System.getProperty(VFS_CLASSLOADER_CLASSPATH);
     if (null == cp || cp.isBlank()) {
       throw new RuntimeException(VFS_CLASSLOADER_CLASSPATH + " must be set in the environment");
     }
@@ -149,7 +149,7 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    * @return true if pre delegaion, false if post delegation
    */
   protected boolean isPreDelegationModel() {
-    String delegation = System.getenv(VFS_CLASSLOADER_DELEGATION);
+    String delegation = System.getProperty(VFS_CLASSLOADER_DELEGATION);
     boolean preDelegation = true;
     if (null != delegation && delegation.equalsIgnoreCase("post")) {
       preDelegation = false;
@@ -165,7 +165,7 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    */
   static String getVFSCacheDir() {
     // Get configuration properties from the environment variables
-    String vfsCacheDir = System.getenv(VFS_CACHE_DIR_PROPERTY);
+    String vfsCacheDir = System.getProperty(VFS_CACHE_DIR_PROPERTY);
     if (null == vfsCacheDir || vfsCacheDir.isBlank()) {
       vfsCacheDir = System.getProperty(VFS_CACHE_DIR_DEFAULT);
     }
@@ -200,7 +200,7 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    * @return monitor interval in ms
    */
   protected long getMonitorInterval() {
-    String interval = System.getenv(VFS_CLASSPATH_MONITOR_INTERVAL);
+    String interval = System.getProperty(VFS_CLASSPATH_MONITOR_INTERVAL);
     if (null != interval && !interval.isBlank()) {
       try {
         return TimeUnit.SECONDS.toMillis(Long.parseLong(interval));

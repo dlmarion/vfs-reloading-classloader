@@ -55,9 +55,6 @@ public class AccumuloDFSBase {
   @BeforeClass
   public static void miniDfsClusterSetup() {
     System.setProperty("java.io.tmpdir", System.getProperty("user.dir") + "/target");
-    // System.setProperty("org.apache.commons.logging.Log",
-    // "org.apache.commons.logging.impl.NoOpLog");
-    // Logger.getRootLogger().setLevel(Level.ERROR);
 
     // Put the MiniDFSCluster directory in the target directory
     System.setProperty("test.build.data", "target/build/test/data");
