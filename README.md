@@ -21,7 +21,7 @@ This module contains a [ClassLoader](https://docs.oracle.com/en/java/javase/11/d
 
 ## Configuration
 
-To use this ClassLoader as the System ClassLoader you must set the JVM system property **java.system.class.loader** to the fully qualified class name (org.apache.accumulo.vfs.ReloadingVFSClassLoader). This jar and it's dependent jars must be on the **java.class.path**. 
+To use this ClassLoader as the System ClassLoader you must set the JVM system property **java.system.class.loader** to the fully qualified class name (org.apache.accumulo.classloader.vfs.ReloadingVFSClassLoader). This jar and it's dependent jars must be on the **java.class.path**. 
 
 To set the classpath for this ClassLoader you must define the system property **vfs.class.loader.classpath** and set it to locations that are supported by [Apache Commons VFS](http://commons.apache.org/proper/commons-vfs/filesystems.html).
 
