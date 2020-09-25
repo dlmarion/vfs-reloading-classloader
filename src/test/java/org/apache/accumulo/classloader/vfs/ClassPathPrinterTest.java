@@ -24,6 +24,7 @@ import static org.junit.Assert.assertTrue;
 import java.io.File;
 import java.net.MalformedURLException;
 
+import org.apache.commons.vfs2.impl.DefaultFileSystemManager;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -52,6 +53,7 @@ public class ClassPathPrinterTest {
   @Test
   public void testPrintClassPath() throws Exception {
     File conf = folder1.newFile("accumulo.properties");
+    DefaultFileSystemManager vfs = VFSManager.generateVfs();
 
     ReloadingVFSClassLoader cl = new ReloadingVFSClassLoader(parent) {
       @Override
@@ -62,14 +64,22 @@ public class ClassPathPrinterTest {
           throw new RuntimeException("URL problem", e);
         }
       }
+
+      @Override
+      protected DefaultFileSystemManager getFileSystem() {
+        return vfs;
+      }
     };
+    cl.setVMInitializedForTests();
+    cl.setVFSForTests(vfs);
+
     assertPattern(ClassPathPrinter.getClassPath(cl, true), "(?s).*\\s+.*\\n$", true);
     assertTrue(ClassPathPrinter.getClassPath(cl, true)
-        .contains("Level 3: ReloadingVFSClassLoader Classloader"));
+        .contains("Level 3: ReloadingVFSClassLoader, classpath items are"));
     assertTrue(ClassPathPrinter.getClassPath(cl, true).length()
         > ClassPathPrinter.getClassPath(cl, false).length());
     assertPattern(ClassPathPrinter.getClassPath(cl, false), "(?s).*\\s+.*\\n$", false);
     assertFalse(ClassPathPrinter.getClassPath(cl, false)
-        .contains("Level 3: ReloadingVFSClassLoader Classloader"));
+        .contains("Level 3: ReloadingVFSClassLoader, classpath items are"));
   }
 }

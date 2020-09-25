@@ -79,22 +79,15 @@ public class ClassPathPrinter {
           continue;
         }
 
-        StringBuilder buffer = new StringBuilder();
-        buffer.append(level);
-        buffer.append(": ");
-        buffer.append(classLoader.getName());
-        buffer.append(" Classloader ");
-
-        String classLoaderDescription = buffer.toString();
         boolean sawFirst = false;
         if (classLoader.getClass().getName().startsWith("jdk.internal")) {
           if (debug) {
-            out.print("Level " + classLoaderDescription + " " + classLoader.getClass().getName()
+            out.print("Level " + level + ": " + classLoader.getClass().getName()
                 + " configuration not inspectable.\n");
           }
         } else if (classLoader instanceof URLClassLoader) {
           if (debug) {
-            out.print("Level " + classLoaderDescription + " URL classpath, items are:\n");
+            out.print("Level " + level + ": URL classpath, items are:\n");
           }
           for (URL u : ((URLClassLoader) classLoader).getURLs()) {
             printJar(out, u.getFile(), debug, sawFirst);
@@ -102,18 +95,21 @@ public class ClassPathPrinter {
           }
         } else if (classLoader instanceof ReloadingVFSClassLoader) {
           if (debug) {
-            out.print("Level " + classLoaderDescription + " VFS classpaths, items are:\n");
+            out.print("Level " + level + ": ReloadingVFSClassLoader, classpath items are:\n");
           }
           @SuppressWarnings("resource")
           ReloadingVFSClassLoader vcl = (ReloadingVFSClassLoader) classLoader;
-          VFSClassLoaderWrapper wrapper = vcl.getWrapper();
-          for (FileObject f : wrapper.getFileObjects()) {
-            printJar(out, f.getURL().getFile(), debug, sawFirst);
-            sawFirst = true;
+          ClassLoader delegate = vcl.getDelegateClassLoader();
+          if (delegate instanceof VFSClassLoaderWrapper) {
+            VFSClassLoaderWrapper wrapper = (VFSClassLoaderWrapper) delegate;
+            for (FileObject f : wrapper.getFileObjects()) {
+              printJar(out, f.getURL().getFile(), debug, sawFirst);
+              sawFirst = true;
+            }
           }
         } else if (classLoader instanceof VFSClassLoader) {
           if (debug) {
-            out.print("Level " + classLoaderDescription + " VFS classpaths, items are:\n");
+            out.print("Level " + level + ": VFSClassLoader, classpath items are:\n");
           }
           VFSClassLoader vcl = (VFSClassLoader) classLoader;
           for (FileObject f : vcl.getFileObjects()) {
@@ -122,7 +118,8 @@ public class ClassPathPrinter {
           }
         } else {
           if (debug) {
-            out.print("Unknown classloader configuration " + classLoader.getClass() + "\n");
+            out.print("Level " + level + ": Unknown classloader configuration "
+                + classLoader.getClass() + "\n");
           }
         }
       }

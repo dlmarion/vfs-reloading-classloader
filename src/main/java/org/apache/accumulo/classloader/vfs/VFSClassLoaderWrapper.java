@@ -75,4 +75,9 @@ public class VFSClassLoaderWrapper extends VFSClassLoader {
     return super.findResources(name);
   }
 
+  @Override
+  public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+    return super.loadClass(name, resolve);
+  }
+
 }

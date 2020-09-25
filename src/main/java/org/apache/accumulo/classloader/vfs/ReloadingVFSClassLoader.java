@@ -24,7 +24,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.Map;
@@ -42,15 +41,14 @@ import java.util.stream.Stream;
 
 import org.apache.commons.vfs2.FileChangeEvent;
 import org.apache.commons.vfs2.FileListener;
+import org.apache.commons.vfs2.FileMonitor;
 import org.apache.commons.vfs2.FileObject;
 import org.apache.commons.vfs2.FileSystemException;
-import org.apache.commons.vfs2.FileSystemManager;
 import org.apache.commons.vfs2.impl.DefaultFileMonitor;
+import org.apache.commons.vfs2.impl.DefaultFileSystemManager;
 import org.apache.commons.vfs2.provider.hdfs.HdfsFileObject;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * <p>
@@ -82,50 +80,126 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
   public static final String VFS_CACHE_DIR_PROPERTY = "vfs.cache.dir";
   public static final String VFS_CLASSLOADER_CLASSPATH = "vfs.class.loader.classpath";
   public static final String VFS_CLASSLOADER_DELEGATION = "vfs.class.loader.delegation";
+  public static final String VFS_CLASSLOADER_DEBUG = "vfs.class.loader.debug";
 
   private static final String VFS_CACHE_DIR_DEFAULT = "java.io.tmpdir";
-  private static final Logger LOG = LoggerFactory.getLogger(ReloadingVFSClassLoader.class);
 
   // set to 5 mins. The rationale behind this large time is to avoid a gazillion tservers all asking
   // the name node for info too frequently.
   private static final long DEFAULT_TIMEOUT = TimeUnit.MINUTES.toMillis(5);
 
+  private static boolean DEBUG = false;
+  private static String CLASSPATH = null;
+  private static Boolean PRE_DELEGATION = null;
+  private static Long MONITOR_INTERVAL = null;
+  private static boolean VM_INITIALIZED = false;
+
   private volatile long maxWaitInterval = 60000;
   private volatile long maxRetries = -1;
-  private volatile long sleepInterval = 5000;
+  private volatile long sleepInterval = 1000;
+  private volatile boolean vfsInitializing = false;
 
-  private final DefaultFileMonitor monitor;
   private final ThreadPoolExecutor executor;
   private final ClassLoader parent;
   private final ReentrantReadWriteLock updateLock = new ReentrantReadWriteLock(true);
   private final String name;
-  private final String classPath;
+  private final String classpath;
   private final Boolean preDelegation;
-  private final FileSystemManager vfs;
+  private final long monitorInterval;
+  private DefaultFileMonitor monitor;
   private FileObject[] files;
   private VFSClassLoaderWrapper cl = null;
+  private DefaultFileSystemManager vfs = null;
 
-  {
-    classPath = getClassPath();
-    preDelegation = isPreDelegationModel();
+  static {
+    DEBUG = Boolean.parseBoolean(System.getProperty(VFS_CLASSLOADER_DEBUG, "false"));
+    CLASSPATH = getClassPathProperty();
+    PRE_DELEGATION = getPreDelegationModelProperty();
+    MONITOR_INTERVAL = getMonitorIntervalProperty();
 
-    try {
-      vfs = VFSManager.generateVfs();
-    } catch (FileSystemException e) {
-      throw new RuntimeException("Error creating VFS", e);
-    }
+    // try {
+    // // Create the FileSystemManager using the parent classloader before this is initialized.
+    // // Need to set the current Thread context class loader or we run into this error:
+    // // Caused by: java.lang.IllegalStateException: getSystemClassLoader cannot be called during
+    // // the system class loader instantiation
+    // // at java.lang.ClassLoader.getSystemClassLoader(java.base@11.0.8/ClassLoader.java:1932)
+    // // at java.lang.ClassLoader.getSystemResources(java.base@11.0.8/ClassLoader.java:1705)
+    // // at org.apache.commons.logging.LogFactory$4.run(LogFactory.java:1266)
+    // // at java.security.AccessController.doPrivileged(java.base@11.0.8/Native Method)
+    // // at org.apache.commons.logging.LogFactory.getResources(LogFactory.java:1282)
+    // // at org.apache.commons.logging.LogFactory.getConfigurationFile(LogFactory.java:1360)
+    // // at org.apache.commons.logging.LogFactory.getFactory(LogFactory.java:453)
+    // // at org.apache.commons.logging.LogFactory.getLog(LogFactory.java:655)
+    // // at
+    // //
+    // org.apache.commons.vfs2.impl.DefaultFileSystemManager.<init>(DefaultFileSystemManager.java:141)
+    // // at org.apache.accumulo.classloader.vfs.VFSManager.generateVfs(VFSManager.java:137)
+    // ClassLoader cl = ReloadingVFSClassLoader.class.getClassLoader();
+    // printDebug(
+    // "Initializing ReloadingVFSClassLoader with class loader: " + cl.getClass().getName());
+    // Thread.currentThread().setContextClassLoader(cl);
+    // // Initialize some dependencies with the parent classloader that otherwise fail
+    // // Trying to prevent:
+    // // java.lang.NoClassDefFoundError: Could not initialize class
+    // // org.apache.logging.log4j.LogManager
+    // // at
+    // //
+    // org.apache.logging.log4j.spi.AbstractLoggerAdapter.getContext(AbstractLoggerAdapter.java:138)
+    // // at org.apache.logging.slf4j.Log4jLoggerFactory.getContext(Log4jLoggerFactory.java:45)
+    // // at
+    // //
+    // org.apache.logging.log4j.spi.AbstractLoggerAdapter.getLogger(AbstractLoggerAdapter.java:48)
+    // // at org.apache.logging.slf4j.Log4jLoggerFactory.getLogger(Log4jLoggerFactory.java:30)
+    // // at org.slf4j.LoggerFactory.getLogger(LoggerFactory.java:363)
+    // // at org.slf4j.LoggerFactory.getLogger(LoggerFactory.java:388)
+    // // at org.apache.hadoop.conf.Configuration.<clinit>(Configuration.java:228)
+    // // at
+    // // org.apache.commons.vfs2.provider.hdfs.HdfsFileSystem.resolveFile(HdfsFileSystem.java:112)
+    // // at
+    // //
+    // org.apache.commons.vfs2.provider.AbstractOriginatingFileProvider.findFile(AbstractOriginatingFileProvider.java:76)
+    // // at
+    // //
+    // org.apache.commons.vfs2.provider.AbstractOriginatingFileProvider.findFile(AbstractOriginatingFileProvider.java:56)
+    // // at
+    // //
+    // org.apache.commons.vfs2.impl.DefaultFileSystemManager.resolveFile(DefaultFileSystemManager.java:717)
+    // // at
+    // //
+    // org.apache.commons.vfs2.impl.DefaultFileSystemManager.resolveFile(DefaultFileSystemManager.java:683)
+    // // at
+    // //
+    // org.apache.commons.vfs2.impl.DefaultFileSystemManager.resolveFile(DefaultFileSystemManager.java:638)
+    // // at org.apache.accumulo.classloader.vfs.VFSManager.resolve(VFSManager.java:94)
+    // // at org.apache.accumulo.classloader.vfs.VFSManager.resolve(VFSManager.java:71)
+    // // at
+    // //
+    // org.apache.accumulo.classloader.vfs.ReloadingVFSClassLoader.<clinit>(ReloadingVFSClassLoader.java:142)
+    //
+    // System.setProperty("log4j2.loggerContextFactory",
+    // "org.apache.logging.log4j.core.impl.Log4jContextFactory");
+    // LogManager.getRootLogger();
+    //
+    // VFSManager.resolve(vfs, CLASSPATH);
+    // printDebug("Initial Classpath resolved.");
+    // } catch (FileSystemException e) {
+    // throw new RuntimeException("Error creating VFS", e);
+    // } finally {
+    // Thread.currentThread().setContextClassLoader(null);
+    // }
 
-    BlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(2);
-    ThreadFactory factory = r -> {
-      Thread t = new Thread(r);
-      t.setDaemon(true);
-      return t;
-    };
-    executor = new ThreadPoolExecutor(1, 1, 1, SECONDS, queue, factory);
   }
 
-  FileSystemManager getFileSystemManager() {
-    return vfs;
+  private static void printDebug(String msg) {
+    if (!DEBUG)
+      return;
+    System.out
+        .println(String.format("%d ReloadingVFSClassLoader: %s", System.currentTimeMillis(), msg));
+  }
+
+  private static void printError(String msg) {
+    System.err
+        .println(String.format("%d ReloadingVFSClassLoader: %s", System.currentTimeMillis(), msg));
   }
 
   /**
@@ -133,13 +207,14 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    *
    * @return classpath value
    */
-  protected String getClassPath() {
+  private static String getClassPathProperty() {
     String cp = System.getProperty(VFS_CLASSLOADER_CLASSPATH);
     if (null == cp || cp.isBlank()) {
-      throw new RuntimeException(VFS_CLASSLOADER_CLASSPATH + " must be set in the environment");
+      printError(VFS_CLASSLOADER_CLASSPATH + " system property not set, using default of \"\"");
+      cp = "";
     }
     String result = replaceEnvVars(cp, System.getenv());
-    LOG.debug("Classpath set to: {}", result);
+    printDebug("Classpath set to: " + result);
     return result;
   }
 
@@ -148,13 +223,13 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    *
    * @return true if pre delegaion, false if post delegation
    */
-  protected boolean isPreDelegationModel() {
+  private static boolean getPreDelegationModelProperty() {
     String delegation = System.getProperty(VFS_CLASSLOADER_DELEGATION);
     boolean preDelegation = true;
     if (null != delegation && delegation.equalsIgnoreCase("post")) {
       preDelegation = false;
     }
-    LOG.debug("ClassLoader configured for pre-delegation: {}", preDelegation);
+    printDebug("ClassLoader configured for pre-delegation: " + preDelegation);
     return preDelegation;
   }
 
@@ -167,10 +242,12 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     // Get configuration properties from the environment variables
     String vfsCacheDir = System.getProperty(VFS_CACHE_DIR_PROPERTY);
     if (null == vfsCacheDir || vfsCacheDir.isBlank()) {
+      printError(VFS_CACHE_DIR_PROPERTY + " system property not set, using default of "
+          + VFS_CACHE_DIR_DEFAULT);
       vfsCacheDir = System.getProperty(VFS_CACHE_DIR_DEFAULT);
     }
     String cache = replaceEnvVars(vfsCacheDir, System.getenv());
-    // LOG.debug("VFS Cache Dir set to: {}", cache);
+    printDebug("VFS Cache Dir set to: " + cache);
     return cache;
   }
 
@@ -199,12 +276,14 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
    *
    * @return monitor interval in ms
    */
-  protected long getMonitorInterval() {
+  private static long getMonitorIntervalProperty() {
     String interval = System.getProperty(VFS_CLASSPATH_MONITOR_INTERVAL);
     if (null != interval && !interval.isBlank()) {
       try {
         return TimeUnit.SECONDS.toMillis(Long.parseLong(interval));
       } catch (NumberFormatException e) {
+        printError(VFS_CLASSPATH_MONITOR_INTERVAL + " system property not set, using default of "
+            + DEFAULT_TIMEOUT);
         return DEFAULT_TIMEOUT;
       }
     }
@@ -221,71 +300,15 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     public void run() {
       while (!executor.isTerminating()) {
         try {
-          FileObject[] files = VFSManager.resolve(getFileSystemManager(), classPath);
-
-          long retries = 0;
-          long currentSleepMillis = sleepInterval;
-
-          if (files.length == 0) {
-            while (files.length == 0 && retryPermitted(retries)) {
-
-              try {
-                LOG.debug("VFS path was empty.  Waiting " + currentSleepMillis + " ms to retry");
-                Thread.sleep(currentSleepMillis);
-                files = VFSManager.resolve(getFileSystemManager(), classPath);
-                retries++;
-
-                currentSleepMillis = Math.min(maxWaitInterval, currentSleepMillis + sleepInterval);
-
-              } catch (InterruptedException e) {
-                LOG.error("VFS Retry Interruped", e);
-                throw new RuntimeException(e);
-              }
-            }
-
-            // There is a chance that the listener was removed from the top level directory or
-            // its children if they were deleted within some time window. Re-add files to be
-            // monitored. The Monitor will ignore files that are already/still being monitored.
-            // forEachCatchRTEs will capture a stream of thrown exceptions.
-            // and can collect them to list or reduce into one exception
-            forEachCatchRTEs(Arrays.stream(files), o -> {
-              addFileToMonitor(o);
-              LOG.debug("monitoring {}", o);
-            });
-          }
-
-          LOG.debug("Rebuilding dynamic classloader using files- {}", stringify(files));
-
-          VFSClassLoaderWrapper cl;
-          if (preDelegation)
-            // This is the normal classloader parent delegation model
-            cl = new VFSClassLoaderWrapper(files, getFileSystemManager(), parent);
-          else
-            // This delegates to the parent after we lookup locally first.
-            cl = new VFSClassLoaderWrapper(files, getFileSystemManager()) {
-              @Override
-              protected synchronized Class<?> loadClass(String name, boolean resolve)
-                  throws ClassNotFoundException {
-                Class<?> c = findLoadedClass(name);
-                if (c != null)
-                  return c;
-                try {
-                  // try finding this class here instead of parent
-                  return findClass(name);
-                } catch (ClassNotFoundException e) {
-
-                }
-                return super.loadClass(name, resolve);
-              }
-            };
-          updateClassloader(files, cl);
+          printDebug("Recreating delegate classloader due to filesystem change event");
+          updateDelegateClassloader();
           return;
         } catch (Exception e) {
-          LOG.error("{}", e.getMessage(), e);
+          e.printStackTrace();
           try {
             Thread.sleep(getMonitorInterval());
           } catch (InterruptedException ie) {
-            LOG.error("{}", ie.getMessage(), ie);
+            ie.printStackTrace();
           }
         }
       }
@@ -294,103 +317,200 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
 
   public ReloadingVFSClassLoader(ClassLoader parent) {
     super(ReloadingVFSClassLoader.class.getSimpleName(), parent);
+    printDebug("Parent ClassLoader: " + parent.getClass().getName());
     this.name = ReloadingVFSClassLoader.class.getSimpleName();
     this.parent = parent;
+    this.classpath = CLASSPATH;
+    this.preDelegation = PRE_DELEGATION;
+    this.monitorInterval = MONITOR_INTERVAL;
 
-    ArrayList<FileObject> pathsToMonitor = new ArrayList<>();
-    try {
-      this.files = VFSManager.resolve(getFileSystemManager(), classPath, pathsToMonitor);
-      this.cl = new VFSClassLoaderWrapper(files, getFileSystemManager(), parent);
-    } catch (FileSystemException e) {
-      throw new RuntimeException("Error creating classloader", e);
-    }
+    BlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(2);
+    ThreadFactory factory = r -> {
+      Thread t = new Thread(r);
+      t.setDaemon(true);
+      return t;
+    };
+    executor = new ThreadPoolExecutor(1, 1, 1, SECONDS, queue, factory);
+  }
 
-    // An HDFS FileSystem and Configuration object were created for each unique HDFS namespace
-    // in the call to resolve above. The HDFS Client did us a favor and cached these objects
-    // so that the next time someone calls FileSystem.get(uri), they get the cached object.
-    // However, these objects were created not with the system VFS classloader, but the
-    // classloader above it. We need to override the classloader on the Configuration objects.
-    // Ran into an issue were log recovery was being attempted and SequenceFile$Reader was
-    // trying to instantiate the key class via WritableName.getClass(String, Configuration)
-    for (FileObject fo : this.files) {
-      if (fo instanceof HdfsFileObject) {
-        String uri = fo.getName().getRootURI();
-        Configuration c = new Configuration(true);
-        c.set(FileSystem.FS_DEFAULT_NAME_KEY, uri);
-        try {
-          FileSystem fs = FileSystem.get(c);
-          fs.getConf().setClassLoader(this.cl);
-        } catch (IOException e) {
-          throw new RuntimeException("Error setting classloader on HDFS FileSystem object", e);
-        }
+  protected DefaultFileSystemManager getFileSystem() {
+    if (null == this.vfs) {
+      if (DEBUG) {
+        VFSManager.enableDebug();
       }
+      try {
+        this.vfs = VFSManager.generateVfs();
+      } catch (FileSystemException e) {
+        printError("Error creating FileSystem: " + e.getMessage());
+        e.printStackTrace();
+      }
+      printDebug("VFS File System created.");
     }
+    return this.vfs;
+  }
 
-    this.monitor = new DefaultFileMonitor(this);
-    monitor.setDelay(getMonitorInterval());
-    monitor.setRecursive(false);
-    LOG.debug("Monitor interval set to: {}", monitor.getDelay());
+  protected String getClassPath() {
+    return this.classpath;
+  }
 
-    forEachCatchRTEs(pathsToMonitor.stream(), o -> {
-      addFileToMonitor(o);
-      LOG.debug("monitoring {}", o);
-    });
-    monitor.start();
+  protected boolean isPreDelegationModel() {
+    return this.preDelegation;
+  }
+
+  protected long getMonitorInterval() {
+    return this.monitorInterval;
+  }
+
+  private synchronized FileMonitor getFileMonitor() {
+    if (null == this.monitor) {
+      this.monitor = new DefaultFileMonitor(this);
+      monitor.setDelay(getMonitorInterval());
+      monitor.setRecursive(false);
+      monitor.start();
+      printDebug("Monitor started with interval set to: " + monitor.getDelay());
+    }
+    return this.monitor;
   }
 
   private void addFileToMonitor(FileObject file) throws RuntimeException {
     try {
-      if (monitor != null)
-        monitor.addFile(file);
+      getFileMonitor().addFile(file);
     } catch (RuntimeException re) {
       if (re.getMessage().contains("files-cache"))
-        LOG.error("files-cache error adding {} to VFS monitor. "
-            + "There is no implementation for files-cache in VFS2", file, re);
+        printDebug("files-cache error adding " + file.toString() + " to VFS monitor. "
+            + "There is no implementation for files-cache in VFS2");
       else
-        LOG.error("Runtime error adding {} to VFS monitor", file, re);
+        printDebug("Runtime error adding " + file.toString() + " to VFS monitor");
+
+      re.printStackTrace();
 
       throw re;
     }
   }
 
-  private synchronized void updateClassloader(FileObject[] files, VFSClassLoaderWrapper cl) {
-    this.files = files;
+  private synchronized void updateDelegateClassloader() throws Exception {
     try {
       updateLock.writeLock().lock();
+      // Re-resolve the files on the classpath, things may have changed.
+      long retries = 0;
+      long currentSleepMillis = sleepInterval;
+      FileObject[] classpathFiles = VFSManager.resolve(getFileSystem(), this.getClassPath());
+      if (classpathFiles.length == 0) {
+        while (classpathFiles.length == 0 && retryPermitted(retries)) {
+          try {
+            printDebug("VFS path was empty.  Waiting " + currentSleepMillis + " ms to retry");
+            Thread.sleep(currentSleepMillis);
+            classpathFiles = VFSManager.resolve(getFileSystem(), this.getClassPath());
+            retries++;
+            currentSleepMillis = Math.min(maxWaitInterval, currentSleepMillis + sleepInterval);
+          } catch (InterruptedException e) {
+            printError("VFS Retry Interruped");
+            e.printStackTrace();
+            throw new RuntimeException(e);
+          }
+        }
+      }
+      if (classpathFiles.length == 0) {
+        printError("ReloadingVFSClassLoader has no resources on classpath");
+      }
+      this.files = classpathFiles;
+      // There is a chance that the listener was removed from the top level directory or
+      // its children if they were deleted within some time window. Re-add files to be
+      // monitored. The Monitor will ignore files that are already/still being monitored.
+      // forEachCatchRTEs will capture a stream of thrown exceptions.
+      // and can collect them to list or reduce into one exception
+      forEachCatchRTEs(Arrays.stream(this.files), f -> {
+        addFileToMonitor(f);
+        printDebug("monitoring: " + f.toString());
+      });
+      // Create the new classloader delegate
+      printDebug("Rebuilding dynamic classloader using files: " + stringify(this.files));
+      VFSClassLoaderWrapper cl;
+      if (this.isPreDelegationModel()) {
+        // This is the normal classloader parent delegation model
+        cl = new VFSClassLoaderWrapper(this.files, getFileSystem(), parent);
+      } else {
+        // This delegates to the parent after we lookup locally first.
+        cl = new VFSClassLoaderWrapper(this.files, getFileSystem()) {
+          @Override
+          public synchronized Class<?> loadClass(String name, boolean resolve)
+              throws ClassNotFoundException {
+            Class<?> c = findLoadedClass(name);
+            if (c != null)
+              return c;
+            try {
+              // try finding this class here instead of parent
+              return findClass(name);
+            } catch (ClassNotFoundException e) {
+
+            }
+            return super.loadClass(name, resolve);
+          }
+        };
+      }
+      // An HDFS FileSystem and Configuration object were created for each unique HDFS namespace
+      // in the call to resolve above. The HDFS Client did us a favor and cached these objects
+      // so that the next time someone calls FileSystem.get(uri), they get the cached object.
+      // However, these objects were created not with the VFS classloader, but the
+      // classloader above it. We need to override the classloader on the Configuration objects.
+      // Ran into an issue were log recovery was being attempted and SequenceFile$Reader was
+      // trying to instantiate the key class via WritableName.getClass(String, Configuration)
+      printDebug("Setting ClassLoader on HDFS FileSystem objects");
+      for (FileObject fo : this.files) {
+        if (fo instanceof HdfsFileObject) {
+          String uri = fo.getName().getRootURI();
+          Configuration c = new Configuration(true);
+          c.set(FileSystem.FS_DEFAULT_NAME_KEY, uri);
+          try {
+            FileSystem fs = FileSystem.get(c);
+            fs.getConf().setClassLoader(cl);
+          } catch (IOException e) {
+            throw new RuntimeException("Error setting classloader on HDFS FileSystem object", e);
+          }
+        }
+      }
+
+      // Update the delegate reference to the new classloader
       this.cl = cl;
+      printDebug("ReloadingVFSClassLoader set.");
     } finally {
       updateLock.writeLock().unlock();
     }
   }
 
+  /**
+   * Remove the file from the monitor
+   * 
+   * @param file
+   *          to remove
+   * @throws RuntimeException
+   *           if error
+   */
   private void removeFile(FileObject file) throws RuntimeException {
     try {
-      if (monitor != null)
-        monitor.removeFile(file);
+      getFileMonitor().removeFile(file);
     } catch (RuntimeException re) {
-      LOG.error("Error removing file from VFS cache {}", file, re);
+      printError("Error removing file from VFS cache: " + file.toString());
+      re.printStackTrace();
       throw re;
     }
   }
 
   @Override
   public void fileCreated(FileChangeEvent event) throws Exception {
-    if (LOG.isDebugEnabled())
-      LOG.debug("{} created, recreating classloader", event.getFileObject().getURL());
+    printDebug(event.getFileObject().getURL().toString() + " created, recreating classloader");
     scheduleRefresh();
   }
 
   @Override
   public void fileDeleted(FileChangeEvent event) throws Exception {
-    if (LOG.isDebugEnabled())
-      LOG.debug("{} deleted, recreating classloader", event.getFileObject().getURL());
+    printDebug(event.getFileObject().getURL().toString() + " deleted, recreating classloader");
     scheduleRefresh();
   }
 
   @Override
   public void fileChanged(FileChangeEvent event) throws Exception {
-    if (LOG.isDebugEnabled())
-      LOG.debug("{} changed, recreating classloader", event.getFileObject().getURL());
+    printDebug(event.getFileObject().getURL().toString() + " changed, recreating classloader");
     scheduleRefresh();
   }
 
@@ -398,21 +518,23 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     try {
       executor.execute(refresher);
     } catch (RejectedExecutionException e) {
-      LOG.trace("Ignoring refresh request (already refreshing)");
+      printDebug("Ignoring refresh request (already refreshing)");
     }
   }
 
   @Override
   public void close() {
 
-    forEachCatchRTEs(Stream.of(files), o -> {
-      removeFile(o);
-      LOG.debug("Removing file from monitoring {}", o);
+    forEachCatchRTEs(Stream.of(this.files), f -> {
+      removeFile(f);
+      printDebug("Closing, removing file from monitoring: " + f.toString());
     });
 
-    executor.shutdownNow();
-    monitor.stop();
-
+    this.executor.shutdownNow();
+    this.monitor.stop();
+    if (null != this.vfs)
+      VFSManager.returnVfs(this.vfs);
+    vfs = null;
   }
 
   public static <T> void forEachCatchRTEs(Stream<T> stream, Consumer<T> consumer) {
@@ -431,14 +553,8 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     });
   }
 
-  // VisibleForTesting intentionally not using annotation from Guava
-  // because it adds unwanted dependency
-  void setMaxRetries(long maxRetries) {
-    this.maxRetries = maxRetries;
-  }
-
   private boolean retryPermitted(long retries) {
-    return (maxRetries < 0 || retries < maxRetries);
+    return (this.maxRetries < 0 || retries < this.maxRetries);
   }
 
   public String stringify(FileObject[] files) {
@@ -454,51 +570,88 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     return sb.toString();
   }
 
-  private VFSClassLoaderWrapper getClassLoader() {
+  /**
+   * Return a reference to the delegate classloader, create a new one if necessary
+   * 
+   * @return reference to delegate classloader
+   */
+  synchronized ClassLoader getDelegateClassLoader() {
+    // We cannot create the VFS file system during VM initialization,
+    // we have to perform some lazy initialization here due to the fact
+    // that the logging libraries (and others) make use of the ServiceLoader
+    // and call ClassLoader.getSystemClassLoader() which you can't do until
+    // the VM is fully initialized.
+    if (!isVMInitialized() || vfsInitializing) {
+      return this.parent;
+    } else if (null == this.vfs) {
+      this.vfsInitializing = true;
+      printDebug("getDelegateClassLoader() initializing VFS.");
+      getFileSystem();
+      if (null == getFileSystem()) {
+        // Some error happened
+        throw new RuntimeException("Problem creating VFS file system");
+      }
+      printDebug("getDelegateClassLoader() VFS initialized.");
+    }
+    if (null == this.cl) {
+      try {
+        printDebug("Creating initial delegate class loader");
+        updateDelegateClassloader();
+      } catch (Exception e) {
+        e.printStackTrace();
+        throw new RuntimeException("Error creating initial delegate classloader", e);
+      }
+    }
+    if (this.vfsInitializing) {
+      this.vfsInitializing = false;
+      printDebug(ClassPathPrinter.getClassPath(this, true));
+    }
     try {
       updateLock.readLock().lock();
-      return cl;
+      return this.cl;
     } finally {
       updateLock.readLock().unlock();
     }
   }
 
-  public VFSClassLoaderWrapper getWrapper() {
-    return getClassLoader();
-  }
-
   @Override
   public Class<?> findClass(String name) throws ClassNotFoundException {
-    return getClassLoader().findClass(name);
+    ClassLoader d = getDelegateClassLoader();
+    if (d instanceof VFSClassLoaderWrapper) {
+      return ((VFSClassLoaderWrapper) d).findClass(name);
+    } else {
+      return null;
+    }
   }
 
   @Override
   public URL findResource(String name) {
-    return getClassLoader().findResource(name);
+    ClassLoader d = getDelegateClassLoader();
+    if (d instanceof VFSClassLoaderWrapper) {
+      return ((VFSClassLoaderWrapper) d).findResource(name);
+    } else {
+      return null;
+    }
   }
 
   @Override
   public Enumeration<URL> findResources(String name) throws IOException {
-    return getClassLoader().findResources(name);
-  }
-
-  @Override
-  public int hashCode() {
-    return getClassLoader().hashCode();
-  }
-
-  @Override
-  public String toString() {
-    StringBuilder buf = new StringBuilder();
-
-    for (FileObject f : files) {
-      try {
-        buf.append("\t").append(f.getURL()).append("\n");
-      } catch (FileSystemException e) {
-        LOG.error("Error getting URL for file", e);
-      }
+    ClassLoader d = getDelegateClassLoader();
+    if (d instanceof VFSClassLoaderWrapper) {
+      return ((VFSClassLoaderWrapper) d).findResources(name);
+    } else {
+      return null;
     }
-    return buf.toString();
+  }
+
+  @Override
+  public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+    ClassLoader d = getDelegateClassLoader();
+    if (d instanceof VFSClassLoaderWrapper) {
+      return ((VFSClassLoaderWrapper) d).loadClass(name, resolve);
+    } else {
+      return null;
+    }
   }
 
   @Override
@@ -506,49 +659,138 @@ public class ReloadingVFSClassLoader extends ClassLoader implements Closeable, F
     return name;
   }
 
+  private boolean isVMInitialized() {
+    if (VM_INITIALIZED) {
+      return VM_INITIALIZED;
+    } else {
+      // We can't call VM.isBooted() directly, but we know from System.initPhase3() that
+      // when this classloader is set via 'java.system.class.loader' that it will be initialized,
+      // then set as the Thread context classloader, then the VM is fully initialized.
+      try {
+        printDebug(
+            "System ClassLoader: " + ClassLoader.getSystemClassLoader().getClass().getName());
+        VM_INITIALIZED = ClassLoader.getSystemClassLoader().equals(this);
+      } catch (IllegalStateException e) {
+        // VM is still initializing
+        VM_INITIALIZED = false;
+      }
+      printDebug("VM Initialized: " + VM_INITIALIZED);
+      return VM_INITIALIZED;
+    }
+  }
+
   @Override
   public Class<?> loadClass(String name) throws ClassNotFoundException {
-    return getClassLoader().loadClass(name);
+    return getDelegateClassLoader().loadClass(name);
   }
 
   @Override
   public URL getResource(String name) {
-    return getClassLoader().getResource(name);
+    return getDelegateClassLoader().getResource(name);
   }
 
   @Override
   public Enumeration<URL> getResources(String name) throws IOException {
-    return getClassLoader().getResources(name);
+    return getDelegateClassLoader().getResources(name);
   }
 
   @Override
   public Stream<URL> resources(String name) {
-    return getClassLoader().resources(name);
+    return getDelegateClassLoader().resources(name);
   }
 
   @Override
   public InputStream getResourceAsStream(String name) {
-    return getClassLoader().getResourceAsStream(name);
+    return getDelegateClassLoader().getResourceAsStream(name);
   }
 
   @Override
   public void setDefaultAssertionStatus(boolean enabled) {
-    getClassLoader().setDefaultAssertionStatus(enabled);
+    getDelegateClassLoader().setDefaultAssertionStatus(enabled);
   }
 
   @Override
   public void setPackageAssertionStatus(String packageName, boolean enabled) {
-    getClassLoader().setPackageAssertionStatus(packageName, enabled);
+    getDelegateClassLoader().setPackageAssertionStatus(packageName, enabled);
   }
 
   @Override
   public void setClassAssertionStatus(String className, boolean enabled) {
-    getClassLoader().setClassAssertionStatus(className, enabled);
+    getDelegateClassLoader().setClassAssertionStatus(className, enabled);
   }
 
   @Override
   public void clearAssertionStatus() {
-    getClassLoader().clearAssertionStatus();
+    getDelegateClassLoader().clearAssertionStatus();
   }
 
+  @Override
+  public int hashCode() {
+    final int prime = 31;
+    int result = 1;
+    result = prime * result + ((name == null) ? 0 : name.hashCode());
+    result = prime * result + ((parent.getName() == null) ? 0 : parent.getName().hashCode());
+    return result;
+  }
+
+  @Override
+  public boolean equals(Object obj) {
+    if (this == obj)
+      return true;
+    if (obj == null)
+      return false;
+    if (getClass() != obj.getClass())
+      return false;
+    ReloadingVFSClassLoader other = (ReloadingVFSClassLoader) obj;
+    if (name == null) {
+      if (other.name != null)
+        return false;
+    } else if (!name.equals(other.name))
+      return false;
+    if (parent == null) {
+      if (other.parent != null)
+        return false;
+    } else if (!parent.getName().equals(other.parent.getName()))
+      return false;
+    return true;
+  }
+
+  @Override
+  public String toString() {
+    StringBuilder buf = new StringBuilder();
+
+    if (null != this.files) {
+      for (FileObject f : files) {
+        try {
+          buf.append("\t").append(f.getURL()).append("\n");
+        } catch (FileSystemException e) {
+          printError("Error getting URL for file: " + f.toString());
+          e.printStackTrace();
+        }
+      }
+    }
+    return buf.toString();
+  }
+
+  // VisibleForTesting intentionally not using annotation from Guava
+  // because it adds unwanted dependency
+  void setMaxRetries(long maxRetries) {
+    this.maxRetries = maxRetries;
+  }
+
+  // VisibleForTesting intentionally not using annotation from Guava
+  // because it adds unwanted dependency
+  void setVMInitializedForTests() {
+    VM_INITIALIZED = true;
+  }
+
+  // VisibleForTesting intentionally not using annotation from Guava
+  // because it adds unwanted dependency
+  void setVFSForTests(DefaultFileSystemManager vfs) {
+    this.vfs = vfs;
+  }
+
+  void enableDebugForTests() {
+    DEBUG = true;
+  }
 }

@@ -29,7 +29,7 @@ import java.io.File;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.vfs2.FileObject;
 import org.apache.commons.vfs2.FileSystemException;
-import org.apache.commons.vfs2.FileSystemManager;
+import org.apache.commons.vfs2.impl.DefaultFileSystemManager;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -44,7 +44,7 @@ public class ReloadingVFSClassLoaderTest {
   public TemporaryFolder folder1 =
       new TemporaryFolder(new File(System.getProperty("user.dir") + "/target"));
   String folderPath;
-  private FileSystemManager vfs;
+  private DefaultFileSystemManager vfs;
 
   @Before
   public void setup() throws Exception {
@@ -83,12 +83,14 @@ public class ReloadingVFSClassLoaderTest {
           }
 
           @Override
-          FileSystemManager getFileSystemManager() {
+          protected DefaultFileSystemManager getFileSystem() {
             return vfs;
           }
         };
+    arvcl.setVMInitializedForTests();
+    arvcl.setVFSForTests(vfs);
 
-    FileObject[] files = arvcl.getWrapper().getFileObjects();
+    FileObject[] files = ((VFSClassLoaderWrapper) arvcl.getDelegateClassLoader()).getFileObjects();
     assertArrayEquals(createFileSystems(dirContents), files);
 
     arvcl.close();
@@ -107,17 +109,19 @@ public class ReloadingVFSClassLoaderTest {
           }
 
           @Override
-          FileSystemManager getFileSystemManager() {
-            return vfs;
-          }
-
-          @Override
           protected long getMonitorInterval() {
             return 500l;
           }
-        };
 
-    FileObject[] files = arvcl.getWrapper().getFileObjects();
+          @Override
+          protected DefaultFileSystemManager getFileSystem() {
+            return vfs;
+          }
+        };
+    arvcl.setVMInitializedForTests();
+    arvcl.setVFSForTests(vfs);
+
+    FileObject[] files = ((VFSClassLoaderWrapper) arvcl.getDelegateClassLoader()).getFileObjects();
     assertArrayEquals(createFileSystems(dirContents), files);
 
     // set retry settings sufficiently low that not everything is reloaded in the first round
@@ -133,14 +137,14 @@ public class ReloadingVFSClassLoaderTest {
 
     assertTrue(new File(folder1.getRoot(), "HelloWorld.jar").delete());
 
-    Thread.sleep(2000);
+    Thread.sleep(1000);
 
     // Update the class
     FileUtils.copyURLToFile(this.getClass().getResource("/HelloWorld.jar"),
         folder1.newFile("HelloWorld2.jar"));
 
     // Wait for the monitor to notice
-    Thread.sleep(2000);
+    Thread.sleep(1000);
 
     Class<?> clazz2 = arvcl.loadClass("test.HelloWorld");
     Object o2 = clazz2.getDeclaredConstructor().newInstance();
@@ -166,17 +170,19 @@ public class ReloadingVFSClassLoaderTest {
           }
 
           @Override
-          FileSystemManager getFileSystemManager() {
-            return vfs;
-          }
-
-          @Override
           protected long getMonitorInterval() {
             return 1000l;
           }
-        };
 
-    FileObject[] files = arvcl.getWrapper().getFileObjects();
+          @Override
+          protected DefaultFileSystemManager getFileSystem() {
+            return vfs;
+          }
+        };
+    arvcl.setVMInitializedForTests();
+    arvcl.setVFSForTests(vfs);
+
+    FileObject[] files = ((VFSClassLoaderWrapper) arvcl.getDelegateClassLoader()).getFileObjects();
     assertArrayEquals(createFileSystems(dirContents), files);
 
     // set retry settings sufficiently high such that reloading happens in the first rounds
@@ -192,14 +198,14 @@ public class ReloadingVFSClassLoaderTest {
 
     assertTrue(new File(folder1.getRoot(), "HelloWorld.jar").delete());
 
-    Thread.sleep(2000);
+    Thread.sleep(3000);
 
     // Update the class
     FileUtils.copyURLToFile(this.getClass().getResource("/HelloWorld.jar"),
         folder1.newFile("HelloWorld2.jar"));
 
     // Wait for the monitor to notice
-    Thread.sleep(2000);
+    Thread.sleep(3000);
 
     Class<?> clazz2 = arvcl.loadClass("test.HelloWorld");
     Object o2 = clazz2.getDeclaredConstructor().newInstance();

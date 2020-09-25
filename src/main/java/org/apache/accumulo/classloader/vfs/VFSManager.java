@@ -37,8 +37,6 @@ import org.apache.commons.vfs2.impl.DefaultFileSystemManager;
 import org.apache.commons.vfs2.impl.FileContentInfoFilenameFactory;
 import org.apache.commons.vfs2.provider.FileReplicator;
 import org.apache.commons.vfs2.provider.hdfs.HdfsFileProvider;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -56,9 +54,13 @@ public class VFSManager {
     }
   }
 
-  private static final Logger LOG = LoggerFactory.getLogger(VFSManager.class);
   private static List<WeakReference<DefaultFileSystemManager>> vfsInstances =
       Collections.synchronizedList(new ArrayList<>());
+  private static volatile boolean DEBUG = false;
+
+  static void enableDebug() {
+    DEBUG = true;
+  }
 
   static {
     // Register the shutdown hook
@@ -113,14 +115,17 @@ public class VFSManager {
                 }
               }
             } else {
-              LOG.debug("classpath entry " + fo.getParent() + " is " + fo.getParent().getType());
+              if (DEBUG)
+                System.out.println("classpath entry " + fo.getParent().toString() + " is "
+                    + fo.getParent().getType().toString());
             }
           } else {
-            LOG.warn("ignoring classpath entry {}", fo);
+            if (DEBUG)
+              System.out.println("ignoring classpath entry: " + fo.toString());
           }
           break;
         default:
-          LOG.warn("ignoring classpath entry {}", fo);
+          System.out.println("ignoring classpath entry:  " + fo.toString());
           break;
       }
 
@@ -129,7 +134,7 @@ public class VFSManager {
     return classpath.toArray(new FileObject[classpath.size()]);
   }
 
-  public static FileSystemManager generateVfs() throws FileSystemException {
+  public static DefaultFileSystemManager generateVfs() throws FileSystemException {
     DefaultFileSystemManager vfs = new DefaultFileSystemManager();
     vfs.addProvider("res", new org.apache.commons.vfs2.provider.res.ResourceFileProvider());
     vfs.addProvider("zip", new org.apache.commons.vfs2.provider.zip.ZipFileProvider());
@@ -178,29 +183,37 @@ public class VFSManager {
     String cacheDirPath = ReloadingVFSClassLoader.getVFSCacheDir();
     String procName = ManagementFactory.getRuntimeMXBean().getName();
     return new File(cacheDirPath,
-        "accumulo-vfs-cache-" + procName + "-" + System.getProperty("user.name", "nouser"));
+        "accumulo-vfs-manager-cache-" + procName + "-" + System.getProperty("user.name", "nouser"));
+  }
+
+  public static void returnVfs(DefaultFileSystemManager vfs) {
+    if (DEBUG) {
+      System.out.println("Closing VFS instance.");
+    }
+    FileReplicator replicator;
+    try {
+      replicator = vfs.getReplicator();
+      if (replicator instanceof UniqueFileReplicator) {
+        ((UniqueFileReplicator) replicator).close();
+      }
+    } catch (FileSystemException e) {
+      System.err.println("Error occurred closing VFS instance: " + e.getMessage());
+    }
+    vfs.close();
   }
 
   public static void close() {
     for (WeakReference<DefaultFileSystemManager> vfsInstance : vfsInstances) {
       DefaultFileSystemManager ref = vfsInstance.get();
       if (ref != null) {
-        FileReplicator replicator;
-        try {
-          replicator = ref.getReplicator();
-          if (replicator instanceof UniqueFileReplicator) {
-            ((UniqueFileReplicator) replicator).close();
-          }
-        } catch (FileSystemException e) {
-          LOG.error("FileSystemException", e);
-        }
-        ref.close();
+        returnVfs(ref);
       }
     }
     try {
       FileUtils.deleteDirectory(computeTopCacheDir());
     } catch (IOException e) {
-      LOG.error("IOException", e);
+      System.err.println("IOException deleting cache directory");
+      e.printStackTrace();
     }
   }
 }

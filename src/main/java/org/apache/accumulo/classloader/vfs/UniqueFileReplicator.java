@@ -32,8 +32,6 @@ import org.apache.commons.vfs2.provider.FileReplicator;
 import org.apache.commons.vfs2.provider.UriParser;
 import org.apache.commons.vfs2.provider.VfsComponent;
 import org.apache.commons.vfs2.provider.VfsComponentContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -41,7 +39,6 @@ public class UniqueFileReplicator implements VfsComponent, FileReplicator {
 
   private static final char[] TMP_RESERVED_CHARS =
       {'?', '/', '\\', ' ', '&', '"', '\'', '*', '#', ';', ':', '<', '>', '|'};
-  private static final Logger log = LoggerFactory.getLogger(UniqueFileReplicator.class);
 
   private File tempDir;
   private VfsComponentContext context;
@@ -50,7 +47,7 @@ public class UniqueFileReplicator implements VfsComponent, FileReplicator {
   public UniqueFileReplicator(File tempDir) {
     this.tempDir = tempDir;
     if (!tempDir.exists() && !tempDir.mkdirs())
-      log.warn("Unexpected error creating directory {}", tempDir);
+      System.out.println("Unexpected error creating directory: " + tempDir.getAbsolutePath());
   }
 
   @SuppressFBWarnings(value = "PATH_TRAVERSAL_IN",
@@ -94,7 +91,7 @@ public class UniqueFileReplicator implements VfsComponent, FileReplicator {
     synchronized (tmpFiles) {
       for (File tmpFile : tmpFiles) {
         if (!tmpFile.delete())
-          log.warn("File does not exist: {}", tmpFile);
+          System.out.println("File does not exist: " + tmpFile.getAbsolutePath());
       }
     }
 
@@ -102,7 +99,7 @@ public class UniqueFileReplicator implements VfsComponent, FileReplicator {
       String[] list = tempDir.list();
       int numChildren = list == null ? 0 : list.length;
       if (numChildren == 0 && !tempDir.delete())
-        log.warn("Cannot delete empty directory: {}", tempDir);
+        System.out.println("Cannot delete empty directory: " + tempDir.getAbsolutePath());
     }
   }
 }
